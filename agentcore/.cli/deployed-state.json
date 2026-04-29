@@ -1,3 +1,16 @@
 {
-  "targets": {}
+  "targets": {
+    "default": {
+      "resources": {
+        "runtimes": {
+          "LLMCouncil": {
+            "runtimeId": "LLMCouncil_LLMCouncil-1Do0YQD6wZ",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-west-2:339712707840:runtime/LLMCouncil_LLMCouncil-1Do0YQD6wZ",
+            "roleArn": "arn:aws:iam::339712707840:role/AgentCore-LLMCouncil-defa-ApplicationAgentLLMCounci-6d0l3mxvHfBy"
+          }
+        },
+        "stackName": "AgentCore-LLMCouncil-default"
+      }
+    }
+  }
 }
