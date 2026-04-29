@@ -1,0 +1,6 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+lambda/lambda_function.zip
