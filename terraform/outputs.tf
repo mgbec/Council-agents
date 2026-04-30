@@ -4,8 +4,13 @@ output "cloudfront_url" {
 }
 
 output "api_endpoint" {
-  description = "API Gateway endpoint for the frontend to call"
+  description = "API Gateway endpoint (29s timeout — use function_url for long queries)"
   value       = "${aws_api_gateway_stage.prod.invoke_url}/council"
+}
+
+output "function_url" {
+  description = "Lambda Function URL (no timeout limit — use this for the frontend)"
+  value       = aws_lambda_function_url.proxy.function_url
 }
 
 output "s3_bucket" {

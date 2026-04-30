@@ -335,20 +335,24 @@ extraction of user preferences and facts.
 The architecture below keeps credentials server-side, authenticates users
 via Cognito, and serves the React app from CloudFront.
 
+Note: API Gateway REST APIs have a hard 29-second timeout, but the council
+takes 30–90 seconds. To work around this, the frontend calls a Lambda
+Function URL directly (no timeout limit). The Lambda validates the Cognito
+JWT in-function to enforce authentication.
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Browser                                                │
 │  React app (CloudFront + S3)                            │
 │       │                                                 │
-│       │ 1. User logs in via Cognito Hosted UI           │
+│       │ 1. User signs in via Cognito                    │
 │       │    → receives JWT id_token                      │
 │       │                                                 │
-│       │ 2. POST /council  (Authorization: Bearer <JWT>) │
+│       │ 2. POST to Lambda Function URL                  │
+│       │    (Authorization: Bearer <JWT>)                │
 │       ▼                                                 │
-│  API Gateway (REST API)                                 │
-│       │  Cognito User Pool Authorizer validates JWT     │
-│       ▼                                                 │
-│  Lambda (proxy function)                                │
+│  Lambda Function URL                                    │
+│       │  Validates Cognito JWT (issuer, expiry, aud)    │
 │       │  Calls bedrock-agentcore InvokeAgentRuntime     │
 │       ▼                                                 │
 │  AgentCore Runtime (LLM Council agent)                  │
@@ -657,11 +661,21 @@ aws s3api put-bucket-policy \
 | Layer | What it does |
 |---|---|
 | Cognito | Authenticates users, issues JWTs. No anonymous access. |
-| API Gateway + Cognito Authorizer | Validates JWT on every request before it reaches Lambda. |
-| Lambda | Keeps AgentCore ARN and IAM credentials server-side. Scopes sessions per user via Cognito `sub`. |
+| Lambda (JWT validation) | Validates Cognito JWT in-function (issuer, expiry, audience, JWKS key ID). Rejects requests without a valid token. |
+| Lambda (session isolation) | Scopes AgentCore sessions per user via Cognito `sub` claim. |
+| Lambda Function URL | CORS restricted to CloudFront origin only. |
 | CloudFront | HTTPS-only, no direct S3 access. |
 | S3 bucket | Private, accessible only via CloudFront OAC. |
 | AgentCore Runtime | Runs in isolated microVMs. No public endpoint exposed to browsers. |
+
+### Why Lambda Function URL instead of API Gateway?
+
+API Gateway REST APIs have a hard 29-second integration timeout. The LLM
+Council takes 30–90 seconds (3 models × 2 stages of parallel calls + 1
+chairman synthesis). There's no way to increase this limit. Lambda Function
+URLs have no such timeout, so the council can run to completion. The
+tradeoff is that JWT validation happens in Lambda code rather than at the
+gateway level.
 
 ### What this gives you
 
@@ -680,10 +694,10 @@ provisions all of the above in one shot. Structure:
 terraform/
 ├── main.tf          # S3 bucket, CloudFront distribution
 ├── cognito.tf       # User pool, app client, hosted UI domain
-├── apigateway.tf    # REST API, Cognito authorizer, /council route
-├── lambda.tf        # Proxy function + IAM role
+├── apigateway.tf    # REST API (kept for reference, not used by frontend)
+├── lambda.tf        # Proxy function + IAM role + Function URL
 ├── lambda/
-│   └── lambda_function.py
+│   └── lambda_function.py   # JWT validation + AgentCore invocation
 ├── variables.tf     # Inputs (region, agent ARN, etc.)
 └── outputs.tf       # URLs, IDs you'll need for the frontend
 ```
@@ -709,11 +723,16 @@ After `terraform apply`, the outputs tell you everything you need:
 ```
 cloudfront_url       = "https://d1234abcdef.cloudfront.net"
 api_endpoint         = "https://abc123.execute-api.us-east-1.amazonaws.com/prod/council"
+function_url         = "https://xxxx.lambda-url.us-east-1.on.aws/"
 s3_bucket            = "llm-council-frontend-xxxx"
 cognito_user_pool_id = "us-east-1_AbCdEfGhI"
 cognito_client_id    = "1a2b3c4d5e6f7g8h9i"
 cognito_domain       = "https://llm-council-123456789.auth.us-east-1.amazoncognito.com"
 ```
+
+The frontend uses `function_url` (not `api_endpoint`) to avoid the
+29-second API Gateway timeout. Update `frontend/src/api.js` with the
+`function_url` value before building.
 
 Then build the frontend with those values and upload:
 

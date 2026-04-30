@@ -51,8 +51,25 @@ resource "aws_lambda_function" "proxy" {
 
   environment {
     variables = {
-      AGENT_RUNTIME_ARN = var.agent_runtime_arn
-      ALLOWED_ORIGIN    = aws_cloudfront_distribution.frontend.domain_name
+      AGENT_RUNTIME_ARN  = var.agent_runtime_arn
+      ALLOWED_ORIGIN     = aws_cloudfront_distribution.frontend.domain_name
+      AGENTCORE_REGION   = "us-west-2"
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
+      COGNITO_CLIENT_ID    = aws_cognito_user_pool_client.web.id
+      COGNITO_REGION       = data.aws_region.current.name
     }
+  }
+}
+
+# Lambda Function URL — bypasses API Gateway's 29-second timeout
+# The council takes 30-90 seconds, which exceeds API Gateway limits
+resource "aws_lambda_function_url" "proxy" {
+  function_name      = aws_lambda_function.proxy.function_name
+  authorization_type = "NONE" # Auth handled by Cognito token validation in the frontend
+  cors {
+    allow_origins = ["https://${aws_cloudfront_distribution.frontend.domain_name}"]
+    allow_methods = ["*"]
+    allow_headers = ["Content-Type", "Authorization"]
+    max_age       = 86400
   }
 }
