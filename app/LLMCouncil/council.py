@@ -124,7 +124,7 @@ Synthesize all of this into a single, comprehensive, accurate answer. Consider:
 Provide a clear, well-reasoned final answer representing the council's collective wisdom:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(CHAIRMAN_MODEL, messages, max_tokens=8192)
 
     if response is None:
         return {
@@ -202,6 +202,10 @@ async def run_full_council(user_query: str) -> Dict[str, Any]:
         user_query, stage1_results
     )
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+
+    # Stage 3 — brief pause to avoid throttling after 6 parallel calls
+    import asyncio as _asyncio
+    await _asyncio.sleep(1)
 
     # Stage 3
     stage3_result = await stage3_synthesize_final(

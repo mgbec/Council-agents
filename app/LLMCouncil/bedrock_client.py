@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import time
 import boto3
+from botocore.exceptions import ClientError
 from typing import List, Dict, Any, Optional
 from config import AWS_REGION, MODEL_DISPLAY_NAMES
 
@@ -22,15 +24,18 @@ def query_model_sync(
     messages: List[Dict[str, str]],
     system_prompt: Optional[str] = None,
     max_tokens: int = 4096,
+    retries: int = 3,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single Bedrock model using the Converse API.
+    Retries on throttling errors with exponential backoff.
 
     Args:
         model_id: Bedrock model identifier
         messages: List of message dicts with 'role' and 'content'
         system_prompt: Optional system prompt
         max_tokens: Maximum tokens in response
+        retries: Number of retry attempts for throttling errors
 
     Returns:
         Dict with 'content' key, or None on failure
@@ -53,14 +58,24 @@ def query_model_sync(
     if system_prompt:
         kwargs["system"] = [{"text": system_prompt}]
 
-    try:
-        response = client.converse(**kwargs)
-        output = response["output"]["message"]["content"]
-        text = "".join(block.get("text", "") for block in output)
-        return {"content": text}
-    except Exception as e:
-        print(f"Error querying model {model_id}: {e}")
-        return None
+    for attempt in range(retries + 1):
+        try:
+            response = client.converse(**kwargs)
+            output = response["output"]["message"]["content"]
+            text = "".join(block.get("text", "") for block in output)
+            return {"content": text}
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            print(f"[Attempt {attempt + 1}/{retries + 1}] Bedrock error for {model_id}: {error_code} - {e}")
+            if error_code in ("ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException") and attempt < retries:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                print(f"  Retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            return None
+        except Exception as e:
+            print(f"[Attempt {attempt + 1}/{retries + 1}] Unexpected error for {model_id}: {type(e).__name__}: {e}")
+            return None
 
 
 async def query_model(
