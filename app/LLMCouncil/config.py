@@ -10,7 +10,7 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 COUNCIL_MODELS = [
     "us.anthropic.claude-sonnet-4-20250514-v1:0",
     "us.meta.llama4-maverick-17b-instruct-v1:0",
-    "mistral.mistral-large-2411-v1:0",
+    "mistral.mistral-large-2402-v1:0",
 ]
 
 # Chairman model - synthesizes the final response
@@ -20,7 +20,7 @@ CHAIRMAN_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 MODEL_DISPLAY_NAMES = {
     "us.anthropic.claude-sonnet-4-20250514-v1:0": "Claude Sonnet 4",
     "us.meta.llama4-maverick-17b-instruct-v1:0": "Llama 4 Maverick",
-    "mistral.mistral-large-2411-v1:0": "Mistral Large",
+    "mistral.mistral-large-2402-v1:0": "Mistral Large",
 }
 
 # AgentCore Memory ID (set after running setup_memory.py, or leave None to skip)
