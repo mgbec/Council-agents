@@ -336,9 +336,10 @@ The architecture below keeps credentials server-side, authenticates users
 via Cognito, and serves the React app from CloudFront.
 
 Note: API Gateway REST APIs have a hard 29-second timeout, but the council
-takes 30–90 seconds. To work around this, the frontend calls a Lambda
-Function URL directly (no timeout limit). The Lambda validates the Cognito
-JWT in-function to enforce authentication.
+takes 30–90 seconds. To work around this, the system uses an async pattern:
+the frontend submits a request (instant response with a request ID), then
+polls for the result every 5 seconds. The heavy work runs in a separate
+SQS-triggered Lambda with no timeout constraint.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -348,14 +349,21 @@ JWT in-function to enforce authentication.
 │       │ 1. User signs in via Cognito                    │
 │       │    → receives JWT id_token                      │
 │       │                                                 │
-│       │ 2. POST to Lambda Function URL                  │
-│       │    (Authorization: Bearer <JWT>)                │
+│       │ 2. POST /council (submit)                       │
+│       │    ← 202 {requestId}                            │
+│       │                                                 │
+│       │ 3. GET /council/{requestId} (poll every 5s)     │
+│       │    ← {status: PENDING|PROCESSING|COMPLETE}      │
 │       ▼                                                 │
-│  Lambda Function URL                                    │
-│       │  Validates Cognito JWT (issuer, expiry, aud)    │
-│       │  Calls bedrock-agentcore InvokeAgentRuntime     │
-│       ▼                                                 │
-│  AgentCore Runtime (LLM Council agent)                  │
+│  API Gateway (Cognito authorizer on all routes)         │
+│       │                                                 │
+│       ├──► Submit Lambda (DynamoDB + SQS)               │
+│       │                                                 │
+│       │    SQS ──► Worker Lambda (150s timeout)         │
+│       │              ├── Calls AgentCore Runtime         │
+│       │              └── Writes result to DynamoDB       │
+│       │                                                 │
+│       └──► Submit Lambda reads DynamoDB (poll response)  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -661,21 +669,22 @@ aws s3api put-bucket-policy \
 | Layer | What it does |
 |---|---|
 | Cognito | Authenticates users, issues JWTs. No anonymous access. |
-| Lambda (JWT validation) | Validates Cognito JWT in-function (issuer, expiry, audience, JWKS key ID). Rejects requests without a valid token. |
-| Lambda (session isolation) | Scopes AgentCore sessions per user via Cognito `sub` claim. |
-| Lambda Function URL | CORS restricted to CloudFront origin only. |
+| API Gateway + Cognito Authorizer | Validates JWT on every request (POST and GET) before Lambda runs. |
+| Submit Lambda | Stores request in DynamoDB, sends to SQS. Enforces per-user isolation on poll reads. |
+| Worker Lambda | SQS-triggered, no public endpoint. Only has AgentCore + DynamoDB permissions. |
+| DynamoDB | Stores request status and results. Per-user access enforced by Submit Lambda. |
+| SQS | Decouples submission from processing. Messages auto-expire after 1 hour. |
 | CloudFront | HTTPS-only, no direct S3 access. |
 | S3 bucket | Private, accessible only via CloudFront OAC. |
 | AgentCore Runtime | Runs in isolated microVMs. No public endpoint exposed to browsers. |
 
-### Why Lambda Function URL instead of API Gateway?
+### Why async (SQS) instead of synchronous?
 
 API Gateway REST APIs have a hard 29-second integration timeout. The LLM
 Council takes 30–90 seconds (3 models × 2 stages of parallel calls + 1
-chairman synthesis). There's no way to increase this limit. Lambda Function
-URLs have no such timeout, so the council can run to completion. The
-tradeoff is that JWT validation happens in Lambda code rather than at the
-gateway level.
+chairman synthesis). The async pattern (submit → SQS → worker → poll)
+keeps all API Gateway calls under 1 second while allowing the worker
+Lambda up to 150 seconds to complete.
 
 ### What this gives you
 
@@ -694,10 +703,11 @@ provisions all of the above in one shot. Structure:
 terraform/
 ├── main.tf          # S3 bucket, CloudFront distribution
 ├── cognito.tf       # User pool, app client, hosted UI domain
-├── apigateway.tf    # REST API (kept for reference, not used by frontend)
-├── lambda.tf        # Proxy function + IAM role + Function URL
+├── apigateway.tf    # REST API, Cognito authorizer, POST + GET routes
+├── lambda.tf        # Submit Lambda, Worker Lambda, DynamoDB, SQS, IAM
 ├── lambda/
-│   └── lambda_function.py   # JWT validation + AgentCore invocation
+│   ├── submit.py    # Handles POST (submit) and GET (poll) via API Gateway
+│   └── worker.py    # SQS-triggered, calls AgentCore, writes result to DynamoDB
 ├── variables.tf     # Inputs (region, agent ARN, etc.)
 └── outputs.tf       # URLs, IDs you'll need for the frontend
 ```
@@ -722,17 +732,17 @@ After `terraform apply`, the outputs tell you everything you need:
 
 ```
 cloudfront_url       = "https://d1234abcdef.cloudfront.net"
-api_endpoint         = "https://abc123.execute-api.us-east-1.amazonaws.com/prod/council"
-function_url         = "https://xxxx.lambda-url.us-east-1.on.aws/"
+api_endpoint         = "https://abc123.execute-api.us-east-1.amazonaws.com/prod"
 s3_bucket            = "llm-council-frontend-xxxx"
 cognito_user_pool_id = "us-east-1_AbCdEfGhI"
 cognito_client_id    = "1a2b3c4d5e6f7g8h9i"
 cognito_domain       = "https://llm-council-123456789.auth.us-east-1.amazoncognito.com"
+dynamodb_table       = "llm-council-requests"
+sqs_queue_url        = "https://sqs.us-east-1.amazonaws.com/123456789/..."
 ```
 
-The frontend uses `function_url` (not `api_endpoint`) to avoid the
-29-second API Gateway timeout. Update `frontend/src/api.js` with the
-`function_url` value before building.
+Update `frontend/src/api.js` with the `api_endpoint`, `cognito_user_pool_id`,
+and `cognito_client_id` values before building.
 
 Then build the frontend with those values and upload:
 

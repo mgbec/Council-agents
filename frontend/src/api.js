@@ -1,6 +1,6 @@
 /**
  * API client for the LLM Council backend (AWS deployment).
- * Authenticates via Cognito and calls API Gateway.
+ * Uses async pattern: POST to submit, then poll GET for result.
  */
 
 import {
@@ -9,7 +9,7 @@ import {
   AuthenticationDetails,
 } from 'amazon-cognito-identity-js';
 
-const API_BASE = 'https://ici6ra5fdvk2sxonxnu4rsormu0lwhhr.lambda-url.us-east-1.on.aws';
+const API_BASE = 'https://4961isq9v3.execute-api.us-east-1.amazonaws.com/prod';
 
 const poolData = {
   UserPoolId: 'us-east-1_b6MVS7S94',
@@ -18,9 +18,6 @@ const poolData = {
 
 const userPool = new CognitoUserPool(poolData);
 
-/**
- * Get the current user's ID token, or null if not signed in.
- */
 function getIdToken() {
   const user = userPool.getCurrentUser();
   return new Promise((resolve, reject) => {
@@ -33,24 +30,14 @@ function getIdToken() {
   });
 }
 
-/**
- * Sign in a user with email and password.
- */
 export function signIn(email, password) {
   return new Promise((resolve, reject) => {
-    const user = new CognitoUser({
-      Username: email,
-      Pool: userPool,
-    });
-    const authDetails = new AuthenticationDetails({
-      Username: email,
-      Password: password,
-    });
+    const user = new CognitoUser({ Username: email, Pool: userPool });
+    const authDetails = new AuthenticationDetails({ Username: email, Password: password });
     user.authenticateUser(authDetails, {
       onSuccess: (session) => resolve(session),
       onFailure: (err) => reject(err),
       newPasswordRequired: (userAttributes) => {
-        // First-time login with temp password — force change
         delete userAttributes.email_verified;
         delete userAttributes.email;
         resolve({ newPasswordRequired: true, user, userAttributes });
@@ -59,9 +46,6 @@ export function signIn(email, password) {
   });
 }
 
-/**
- * Sign up a new user.
- */
 export function signUp(email, password) {
   return new Promise((resolve, reject) => {
     userPool.signUp(email, password, [], null, (err, result) => {
@@ -71,9 +55,6 @@ export function signUp(email, password) {
   });
 }
 
-/**
- * Confirm sign-up with verification code.
- */
 export function confirmSignUp(email, code) {
   return new Promise((resolve, reject) => {
     const user = new CognitoUser({ Username: email, Pool: userPool });
@@ -84,17 +65,11 @@ export function confirmSignUp(email, code) {
   });
 }
 
-/**
- * Sign out the current user.
- */
 export function signOut() {
   const user = userPool.getCurrentUser();
   if (user) user.signOut();
 }
 
-/**
- * Check if a user is currently signed in.
- */
 export async function isSignedIn() {
   try {
     const token = await getIdToken();
@@ -104,25 +79,53 @@ export async function isSignedIn() {
   }
 }
 
-/**
- * Get the current user's email.
- */
 export function getCurrentUserEmail() {
   const user = userPool.getCurrentUser();
   return user ? user.getUsername() : null;
 }
 
-export const api = {
-  /**
-   * Send a message to the LLM Council.
-   */
-  async sendMessage(conversationId, content) {
-    const token = await getIdToken();
-    if (!token) {
-      throw new Error('Not signed in');
+/**
+ * Poll for a result until it's COMPLETE or FAILED.
+ */
+async function pollForResult(requestId, onStatus) {
+  const token = await getIdToken();
+  const maxAttempts = 40; // 40 × 5s = 200s max wait
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+
+    const resp = await fetch(`${API_BASE}/council/${requestId}`, {
+      headers: { Authorization: token },
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Poll failed (${resp.status})`);
     }
 
-    const response = await fetch(API_BASE, {
+    const data = await resp.json();
+    if (onStatus) onStatus(data.status);
+
+    if (data.status === 'COMPLETE') {
+      // result is stored as JSON string in DynamoDB
+      return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+    }
+    if (data.status === 'FAILED') {
+      throw new Error(data.error || 'Council processing failed');
+    }
+    // PENDING or PROCESSING — keep polling
+  }
+  throw new Error('Timeout waiting for council response');
+}
+
+export const api = {
+  /**
+   * Send a message to the LLM Council (async: submit + poll).
+   */
+  async sendMessage(conversationId, content, onStatus) {
+    const token = await getIdToken();
+    if (!token) throw new Error('Not signed in');
+
+    // Submit the request
+    const submitResp = await fetch(`${API_BASE}/council`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -134,11 +137,14 @@ export const api = {
       }),
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Request failed (${response.status}): ${text}`);
+    if (!submitResp.ok) {
+      const text = await submitResp.text();
+      throw new Error(`Submit failed (${submitResp.status}): ${text}`);
     }
 
-    return response.json();
+    const { requestId } = await submitResp.json();
+
+    // Poll for the result
+    return pollForResult(requestId, onStatus);
   },
 };
