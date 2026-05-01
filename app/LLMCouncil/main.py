@@ -1,24 +1,34 @@
 """
-LLM Council on Amazon Bedrock AgentCore.
+LLM Council on Amazon Bedrock AgentCore — Strands Agent version.
 
-This is the main entry point. It can run:
-  1. Locally via `python main.py` (starts an HTTP server on :8080)
-  2. Deployed to AgentCore Runtime via `agentcore deploy`
-  3. Interactively in the terminal for quick testing
+Uses the Strands Agent framework for proper session management and
+OpenTelemetry integration, so sessions appear in AgentCore observability.
 """
 
 import asyncio
 import json
-import uuid
+import os
+from strands import Agent, tool
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from council import run_full_council
-from memory_integration import (
-    store_conversation_event,
-    store_council_result,
-    get_conversation_history,
-)
+from config import COUNCIL_MODELS, CHAIRMAN_MODEL, MODEL_DISPLAY_NAMES
 
 app = BedrockAgentCoreApp()
+
+
+@tool
+def consult_council(question: str) -> str:
+    """Consult the LLM Council with a question. The council queries multiple AI models,
+    has them peer-review each other's responses anonymously, then synthesizes a final answer.
+
+    Args:
+        question: The question to ask the council.
+
+    Returns:
+        A formatted string with all three stages of the council deliberation.
+    """
+    result = asyncio.run(run_full_council(question))
+    return format_response_text(result)
 
 
 def format_response_text(result: dict) -> str:
@@ -68,35 +78,43 @@ def format_response_text(result: dict) -> str:
     return "\n".join(lines)
 
 
-@app.entrypoint
-async def invoke(payload, context):
-    """
-    AgentCore Runtime entry point.
+# Build the model list for the system prompt
+model_names = [MODEL_DISPLAY_NAMES.get(m, m) for m in COUNCIL_MODELS]
+chairman_name = MODEL_DISPLAY_NAMES.get(CHAIRMAN_MODEL, CHAIRMAN_MODEL)
 
-    Payload: {"prompt": "your question here"}
-    Returns: Full council deliberation result.
-    """
+SYSTEM_PROMPT = f"""You are the LLM Council orchestrator. When a user asks a question, 
+use the consult_council tool to get the council's deliberation. Always pass the user's 
+full question to the tool. Return the tool's output directly to the user without 
+modification.
+
+The council consists of: {', '.join(model_names)}.
+The chairman (who synthesizes the final answer) is: {chairman_name}.
+
+Do not answer questions yourself — always delegate to the council tool."""
+
+
+@app.entrypoint
+def invoke(payload, context):
+    """AgentCore Runtime entry point using Strands Agent."""
     user_query = payload.get(
         "prompt",
-        "No prompt provided. Please send {\"prompt\": \"your question\"}.",
+        'No prompt provided. Please send {"prompt": "your question"}.',
     )
 
-    # Determine session ID (from AgentCore context or generate one)
-    session_id = getattr(context, "session_id", None) or str(uuid.uuid4())
+    # Create agent with session context from AgentCore
+    agent = Agent(
+        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        tools=[consult_council],
+        system_prompt=SYSTEM_PROMPT,
+    )
 
-    # Store user message in memory
-    store_conversation_event(session_id, "user", user_query)
+    # Invoke the agent — Strands handles OTEL context propagation
+    result = agent(user_query)
 
-    # Run the 3-stage council
-    result = await run_full_council(user_query)
-
-    # Store council result in memory
-    store_council_result(session_id, result)
-
-    # Return both structured data and a readable text version
+    # Return structured response
     return {
-        "text": format_response_text(result),
-        "structured": result,
+        "text": str(result),
+        "session_id": getattr(context, "session_id", None),
     }
 
 
@@ -104,21 +122,24 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
-        # Interactive terminal mode for quick testing
-        print("LLM Council (Bedrock AgentCore) — Interactive Mode")
+        print("LLM Council (Strands Agent) — Interactive Mode")
         print("Type your question and press Enter. Ctrl+C to exit.\n")
+        agent = Agent(
+            model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            tools=[consult_council],
+            system_prompt=SYSTEM_PROMPT,
+        )
         while True:
             try:
                 query = input("You: ").strip()
                 if not query:
                     continue
                 print("\nConsulting the council...\n")
-                result = asyncio.run(run_full_council(query))
-                print(format_response_text(result))
+                result = agent(query)
+                print(result)
                 print()
             except KeyboardInterrupt:
                 print("\nGoodbye!")
                 break
     else:
-        # Start as AgentCore Runtime server
         app.run()
