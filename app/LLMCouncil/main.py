@@ -25,10 +25,13 @@ def consult_council(question: str) -> str:
         question: The question to ask the council.
 
     Returns:
-        A formatted string with all three stages of the council deliberation.
+        A JSON string with both formatted text and structured stage data.
     """
     result = asyncio.run(run_full_council(question))
-    return format_response_text(result)
+    return json.dumps({
+        "text": format_response_text(result),
+        "structured": result,
+    })
 
 
 def format_response_text(result: dict) -> str:
@@ -108,15 +111,32 @@ def invoke(payload, context):
         system_prompt=SYSTEM_PROMPT,
     )
 
-    # Call the council tool directly via the agent (skips the LLM reasoning step)
-    # This still registers the tool call in OTEL spans for observability
-    result = agent.tool.consult_council(question=user_query)
+    # Call the council tool directly (skips LLM reasoning, keeps OTEL spans)
+    tool_result = agent.tool.consult_council(question=user_query)
 
-    # Return structured response
-    return {
-        "text": str(result),
-        "session_id": getattr(context, "session_id", None),
-    }
+    # Extract the JSON string from the Strands tool result
+    raw = ""
+    if hasattr(tool_result, "content"):
+        for block in tool_result.content:
+            if isinstance(block, dict) and "text" in block:
+                raw = block["text"]
+                break
+            elif isinstance(block, str):
+                raw = block
+                break
+    elif isinstance(tool_result, str):
+        raw = tool_result
+    else:
+        raw = str(tool_result)
+
+    # Parse the JSON that the tool returned
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"text": raw, "structured": None}
+
+    parsed["session_id"] = getattr(context, "session_id", None)
+    return parsed
 
 
 if __name__ == "__main__":
