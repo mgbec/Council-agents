@@ -1,44 +1,32 @@
 """
-LLM Council on Amazon Bedrock AgentCore — Strands Agent version.
+LLM Council on Amazon Bedrock AgentCore.
 
-Uses the Strands Agent framework for proper session management and
-OpenTelemetry integration, so sessions appear in AgentCore observability.
+Uses manual OpenTelemetry spans for session tracking in observability.
 """
 
 import asyncio
 import json
+import uuid
 import os
-from strands import Agent, tool
+
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from council import run_full_council
-from config import COUNCIL_MODELS, CHAIRMAN_MODEL, MODEL_DISPLAY_NAMES
+
+# Optional: OTEL for session observability
+try:
+    from opentelemetry import trace
+    tracer = trace.get_tracer("llm-council")
+    HAS_OTEL = True
+except ImportError:
+    HAS_OTEL = False
 
 app = BedrockAgentCoreApp()
-
-
-@tool
-def consult_council(question: str) -> str:
-    """Consult the LLM Council with a question. The council queries multiple AI models,
-    has them peer-review each other's responses anonymously, then synthesizes a final answer.
-
-    Args:
-        question: The question to ask the council.
-
-    Returns:
-        A JSON string with both formatted text and structured stage data.
-    """
-    result = asyncio.run(run_full_council(question))
-    return json.dumps({
-        "text": format_response_text(result),
-        "structured": result,
-    })
 
 
 def format_response_text(result: dict) -> str:
     """Format the council result into readable text output."""
     lines = []
 
-    # Stage 1: Individual responses
     lines.append("=" * 60)
     lines.append("STAGE 1: Individual Responses")
     lines.append("=" * 60)
@@ -47,7 +35,6 @@ def format_response_text(result: dict) -> str:
         lines.append(f"\n--- {name} ---")
         lines.append(resp["response"])
 
-    # Stage 2: Peer rankings
     lines.append("\n" + "=" * 60)
     lines.append("STAGE 2: Peer Rankings")
     lines.append("=" * 60)
@@ -58,7 +45,6 @@ def format_response_text(result: dict) -> str:
         if rank.get("parsed_ranking"):
             lines.append(f"  Extracted order: {', '.join(rank['parsed_ranking'])}")
 
-    # Aggregate rankings
     agg = result.get("metadata", {}).get("aggregate_rankings", [])
     if agg:
         lines.append("\n--- Aggregate Rankings (lower is better) ---")
@@ -69,7 +55,6 @@ def format_response_text(result: dict) -> str:
                 f"({entry['rankings_count']} votes)"
             )
 
-    # Stage 3: Final answer
     lines.append("\n" + "=" * 60)
     lines.append("STAGE 3: Final Council Answer")
     lines.append("=" * 60)
@@ -81,83 +66,47 @@ def format_response_text(result: dict) -> str:
     return "\n".join(lines)
 
 
-# Build the model list for the system prompt
-model_names = [MODEL_DISPLAY_NAMES.get(m, m) for m in COUNCIL_MODELS]
-chairman_name = MODEL_DISPLAY_NAMES.get(CHAIRMAN_MODEL, CHAIRMAN_MODEL)
-
-SYSTEM_PROMPT = f"""You are the LLM Council orchestrator. When a user asks a question, 
-use the consult_council tool to get the council's deliberation. Always pass the user's 
-full question to the tool. Return the tool's output directly to the user without 
-modification.
-
-The council consists of: {', '.join(model_names)}.
-The chairman (who synthesizes the final answer) is: {chairman_name}.
-
-Do not answer questions yourself — always delegate to the council tool."""
-
-
 @app.entrypoint
-def invoke(payload, context):
-    """AgentCore Runtime entry point using Strands Agent."""
+async def invoke(payload, context):
+    """AgentCore Runtime entry point."""
     user_query = payload.get(
         "prompt",
-        'No prompt provided. Please send {"prompt": "your question"}.',
+        "No prompt provided. Please send {\"prompt\": \"your question\"}.",
     )
 
-    # Create agent with session context from AgentCore
-    agent = Agent(
-        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        tools=[consult_council],
-        system_prompt=SYSTEM_PROMPT,
-    )
+    session_id = getattr(context, "session_id", None) or str(uuid.uuid4())
 
-    # Call the council tool directly (skips LLM reasoning, keeps OTEL spans)
-    tool_result = agent.tool.consult_council(question=user_query)
-
-    # Extract the JSON string from the Strands tool result
-    raw = ""
-    if hasattr(tool_result, "content"):
-        for block in tool_result.content:
-            if isinstance(block, dict) and "text" in block:
-                raw = block["text"]
-                break
-            elif isinstance(block, str):
-                raw = block
-                break
-    elif isinstance(tool_result, str):
-        raw = tool_result
+    # Run council with OTEL span for observability
+    if HAS_OTEL:
+        with tracer.start_as_current_span("council.deliberation") as span:
+            span.set_attribute("session.id", session_id)
+            span.set_attribute("council.query", user_query[:200])
+            result = await run_full_council(user_query)
+            span.set_attribute("council.models_responded", len(result.get("stage1", [])))
     else:
-        raw = str(tool_result)
+        result = await run_full_council(user_query)
 
-    # Parse the JSON that the tool returned
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        parsed = {"text": raw, "structured": None}
-
-    parsed["session_id"] = getattr(context, "session_id", None)
-    return parsed
+    return {
+        "text": format_response_text(result),
+        "structured": result,
+        "session_id": session_id,
+    }
 
 
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
-        print("LLM Council (Strands Agent) — Interactive Mode")
+        print("LLM Council (Bedrock AgentCore) — Interactive Mode")
         print("Type your question and press Enter. Ctrl+C to exit.\n")
-        agent = Agent(
-            model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            tools=[consult_council],
-            system_prompt=SYSTEM_PROMPT,
-        )
         while True:
             try:
                 query = input("You: ").strip()
                 if not query:
                     continue
                 print("\nConsulting the council...\n")
-                result = agent(query)
-                print(result)
+                result = asyncio.run(run_full_council(query))
+                print(format_response_text(result))
                 print()
             except KeyboardInterrupt:
                 print("\nGoodbye!")
