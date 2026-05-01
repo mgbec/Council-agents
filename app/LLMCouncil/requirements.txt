@@ -1,4 +1,2 @@
 bedrock-agentcore
-strands-agents
-strands-agents-tools
 boto3>=1.35.0
