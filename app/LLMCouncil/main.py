@@ -108,8 +108,9 @@ def invoke(payload, context):
         system_prompt=SYSTEM_PROMPT,
     )
 
-    # Invoke the agent — Strands handles OTEL context propagation
-    result = agent(user_query)
+    # Call the council tool directly via the agent (skips the LLM reasoning step)
+    # This still registers the tool call in OTEL spans for observability
+    result = agent.tool.consult_council(question=user_query)
 
     # Return structured response
     return {

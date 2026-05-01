@@ -99,7 +99,7 @@ resource "aws_dynamodb_table" "requests" {
 
 resource "aws_sqs_queue" "council" {
   name                       = "${var.project_name}-council-queue"
-  visibility_timeout_seconds = 180 # Must be >= worker Lambda timeout
+  visibility_timeout_seconds = 360 # Must be >= worker Lambda timeout
   message_retention_seconds  = 3600
 }
 
@@ -146,7 +146,7 @@ resource "aws_lambda_function" "worker" {
   role             = aws_iam_role.worker_lambda.arn
   handler          = "worker.lambda_handler"
   runtime          = "python3.13"
-  timeout          = 150
+  timeout          = 300
   memory_size      = 256
   filename         = data.archive_file.worker.output_path
   source_code_hash = data.archive_file.worker.output_base64sha256
