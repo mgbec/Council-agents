@@ -78,12 +78,20 @@ async def invoke(payload, context):
 
     # Run council with OTEL span for observability
     if HAS_OTEL:
-        with tracer.start_as_current_span("council.deliberation") as span:
-            span.set_attribute("session.id", session_id)
-            span.set_attribute("gen_ai.session.id", session_id)
-            span.set_attribute("council.query", user_query[:200])
-            result = await run_full_council(user_query)
-            span.set_attribute("council.models_responded", len(result.get("stage1", [])))
+        from opentelemetry import baggage, context as otel_context
+        # Set session ID as baggage so it propagates to all child spans
+        ctx = baggage.set_baggage("session.id", session_id)
+        ctx = baggage.set_baggage("gen_ai.session.id", session_id, context=ctx)
+        token = otel_context.attach(ctx)
+        try:
+            with tracer.start_as_current_span("council.deliberation") as span:
+                span.set_attribute("session.id", session_id)
+                span.set_attribute("gen_ai.session.id", session_id)
+                span.set_attribute("council.query", user_query[:200])
+                result = await run_full_council(user_query)
+                span.set_attribute("council.models_responded", len(result.get("stage1", [])))
+        finally:
+            otel_context.detach(token)
     else:
         result = await run_full_council(user_query)
 
