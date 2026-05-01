@@ -80,6 +80,7 @@ async def invoke(payload, context):
     if HAS_OTEL:
         with tracer.start_as_current_span("council.deliberation") as span:
             span.set_attribute("session.id", session_id)
+            span.set_attribute("gen_ai.session.id", session_id)
             span.set_attribute("council.query", user_query[:200])
             result = await run_full_council(user_query)
             span.set_attribute("council.models_responded", len(result.get("stage1", [])))
