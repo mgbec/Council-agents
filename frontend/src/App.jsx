@@ -154,7 +154,9 @@ function App() {
 
     try {
       const result = await api.sendMessage(conversation.id, content);
+      console.log('Council result:', result);
       const structured = result.structured || result;
+      console.log('Structured:', structured);
 
       // Replace loading message with real data
       setConversation((prev) => {
@@ -171,11 +173,19 @@ function App() {
       });
     } catch (err) {
       console.error('Council error:', err);
-      // Remove loading message on error
-      setConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -1),
-      }));
+      // Show error to user instead of silently removing
+      setConversation((prev) => {
+        const msgs = [...prev.messages];
+        msgs[msgs.length - 1] = {
+          role: 'assistant',
+          stage1: null,
+          stage2: null,
+          stage3: { model: 'error', display_name: 'Error', response: err.message },
+          metadata: null,
+          loading: { stage1: false, stage2: false, stage3: false },
+        };
+        return { ...prev, messages: msgs };
+      });
     }
 
     setIsLoading(false);

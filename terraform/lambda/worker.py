@@ -3,9 +3,12 @@
 import json
 import os
 import boto3
+from botocore.config import Config
 
 AGENTCORE_REGION = os.environ.get("AGENTCORE_REGION", "us-west-2")
-agentcore = boto3.client("bedrock-agentcore", region_name=AGENTCORE_REGION)
+# AgentCore invocations can take 60-120s — increase boto3 timeouts
+boto_config = Config(read_timeout=180, connect_timeout=10, retries={"max_attempts": 0})
+agentcore = boto3.client("bedrock-agentcore", region_name=AGENTCORE_REGION, config=boto_config)
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 AGENT_RUNTIME_ARN = os.environ["AGENT_RUNTIME_ARN"]
 TABLE_NAME = os.environ["TABLE_NAME"]

@@ -97,10 +97,13 @@ def lambda_handler(event, context):
         table = dynamodb.Table(TABLE_NAME)
         item = table.get_item(Key={"requestId": request_id}).get("Item")
         if not item:
+            print(f"GET {request_id}: NOT FOUND in DynamoDB")
             return {"statusCode": 404, "headers": CORS_HEADERS, "body": json.dumps({"error": "Not found"})}
         # Only allow users to see their own requests
         if item.get("userSub") != user_sub:
+            print(f"GET {request_id}: FORBIDDEN - request userSub={item.get('userSub')}, caller={user_sub}")
             return {"statusCode": 403, "headers": CORS_HEADERS, "body": json.dumps({"error": "Forbidden"})}
+        print(f"GET {request_id}: status={item['status']}")
         return {
             "statusCode": 200,
             "headers": CORS_HEADERS,
@@ -116,6 +119,8 @@ def lambda_handler(event, context):
 
         request_id = str(uuid.uuid4())
         session_id = body.get("session_id", f"web-{user_sub[:32]}-default").ljust(33, "0")
+
+        print(f"POST: requestId={request_id}, userSub={user_sub}, prompt={prompt[:80]}")
 
         # Store pending request
         table = dynamodb.Table(TABLE_NAME)
@@ -137,6 +142,7 @@ def lambda_handler(event, context):
                 "sessionId": session_id,
             }),
         )
+        print(f"POST: SQS message sent for {request_id}")
 
         return {
             "statusCode": 202,

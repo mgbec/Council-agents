@@ -95,6 +95,7 @@ async def query_models_parallel(
     models: List[str],
     messages: List[Dict[str, str]],
     system_prompt: Optional[str] = None,
+    max_tokens: int = 4096,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple Bedrock models in parallel.
@@ -103,10 +104,11 @@ async def query_models_parallel(
         models: List of Bedrock model identifiers
         messages: Messages to send to each model
         system_prompt: Optional system prompt
+        max_tokens: Maximum tokens per response
 
     Returns:
         Dict mapping model_id to response (or None on failure)
     """
-    tasks = [query_model(m, messages, system_prompt) for m in models]
+    tasks = [query_model(m, messages, system_prompt, max_tokens) for m in models]
     responses = await asyncio.gather(*tasks)
     return {model: resp for model, resp in zip(models, responses)}

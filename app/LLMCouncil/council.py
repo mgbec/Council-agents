@@ -12,7 +12,7 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     Stage 1: Collect individual responses from all council models in parallel.
     """
     messages = [{"role": "user", "content": user_query}]
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(COUNCIL_MODELS, messages, max_tokens=2048)
 
     results = []
     for model, response in responses.items():
@@ -72,7 +72,7 @@ FINAL RANKING:
 Now provide your evaluation and ranking:"""
 
     messages = [{"role": "user", "content": ranking_prompt}]
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(COUNCIL_MODELS, messages, max_tokens=2048)
 
     results = []
     for model, response in responses.items():

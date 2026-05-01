@@ -89,7 +89,7 @@ export function getCurrentUserEmail() {
  */
 async function pollForResult(requestId, onStatus) {
   const token = await getIdToken();
-  const maxAttempts = 40; // 40 × 5s = 200s max wait
+  const maxAttempts = 60; // 60 × 5s = 300s max wait
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 5000));
 
